@@ -1,0 +1,131 @@
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      CidrBlock: 10.0.0.0/16
+
+  # public
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+      MapPublicIpOnLaunch: true
+
+  PublicRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      AllocationId: !GetAtt EIP.AllocationId
+
+  # private
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      NatGatewayId: !Ref NatGateway
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+
+  PrivateRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ec2
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-kernel-5.10-hvm-arm64-gp2
+      InstanceType: t4g.micro
+      IamInstanceProfile: !Ref InstanceProfile
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          GroupSet: [!Ref SecurityGroup]
+          AssociatePublicIpAddress: true # notice that this instance has a public ip
+          SubnetId: !Ref PrivateSubnet   # but is still in a private subnet
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-host
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -eux
+          
+          usermod --password $(echo helloworld | openssl passwd -1 -stdin) ec2-user
+          echo hello world
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref Vpc
+      GroupDescription: Allow wide-open access
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: "-1"
+          FromPort: -1
+          ToPort: -1
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Role]
